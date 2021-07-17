@@ -1,0 +1,83 @@
+import "/Encryption.cl" as Enc;
+import "/User_Data.cl" as UData;
+import "/Auth.cl" as Auth;
+simport "JENKINS==v1.0" as jenkins;
+
+ManagerSetup{
+    routingTable{
+        CHAIN c1{
+            #//login
+            Auth.api.Login -> Enc.api.Decrypt -> UData.api.CheckDataBase ->{
+                PROTOCOL p = UData.details.CommunicationProtocol;
+
+                JSON response = (p,JSON) this.data;
+                #/*To check for fields in this.data: LOG(this.data.describe)*/
+                if (response.has('has_user')){
+                    PROTOCOL p2 = Enc.details.CommunicationProtocol;
+                    TIME timeout = Time("50s");
+                    
+                    JSON session = (p2,JSON)Enc.api.NewSessionToken(timeout);#//return example {"session_token":"hjvsks4qd7q5"}
+                    #ajout de la clef de la session à la base de données
+                    PROTOCOL p3 = UData.details.CommunicationProtocol;
+                    p3 converted_session = (JSON,p3) session;
+                    p3 resp = UData.api.AddSecureSession(response.get('user_id'),converted_session);
+                    
+                    JSON response = session
+                }
+                else{
+                    JSON response = '{}';
+                }
+            LOG(response);
+            return response;
+            }
+        }
+        #//check if the user has session
+        CHAIN c2{
+            Auth.api.CheckSession -> Enc.api.CheckSession  -> UData.api.CheckSession->{
+                PROTOCOL p = UData.details.CommunicationProtocol;
+                JSON user = (p,JSON) this.data;
+                if(user.has('user_id')){
+                    return Auth.api.HasUser((JSON,p)user);#//can return chain!
+                }
+                else{
+                    return Auth.api.NoUser();
+                }
+            }
+        }
+        #//logout
+        CHAIN c3{
+            Auth.api.Logout ->
+            Enc.api.CheckSession ->
+            UData.api.DeleteSession;
+        }
+        GATEWAY(c1);
+        GATEWAY(c2);
+        GATEWAY(c3);
+    }
+    serviceSecurity{
+        #//services have 4 states : Disabled(gray) , Running(green) , Loding(blue) , Down(red)
+        PLUGIN s1{
+            if ((string) UData.getState() == "Down"){
+                #//LOG and WRITE are shown on the Manager machine/container
+                LOG("UserData service is Down, want to disable Auth service [Y/n]?");
+                string message = WRITE();
+                if (message =="Y"){
+                    Auth.Disable();
+                }
+            }
+        }
+        DAEMON(s1);
+    }
+    communicationSecurity{
+        CHAIN c1{
+            Auth -> UData -> Enc;
+        }
+        CHAIN c2{
+            Enc -> Auth;#//Enc can't comunicate directly with Auth in order to hide it's processes
+            Auth-> UData; #// the request needs to pass by Enc first!!
+        }
+        TRACK(c1);
+        DISABLE(c2);
+    }
+    Delivery TOOL(jenkins);
+}
